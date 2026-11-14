@@ -1,4 +1,4 @@
-name: Dong goi App iPhone (.ipa) PS5Translator 1.24
+name: Dong goi App iPhone (.ipa) PS5Translator 1.25
 
 on:
   push:
@@ -103,6 +103,11 @@ jobs:
           # 1.18: ma nguon app TV Samsung di kem app iPhone (cai TV truc tiep tu iPhone)
           if [ -d "TVApp" ]; then
             cp TVApp/* Sources/
+            # 1.25: doi duoi icon TV sang .bin de Xcode KHONG chuyen PNG sang dinh dang CgBI cua Apple
+            # (TV Samsung khong doc duoc CgBI -> app TV mat icon)
+            if [ -f Sources/tv_app_icon.png ]; then
+              mv Sources/tv_app_icon.png Sources/tv_app_icon.bin
+            fi
           fi
 
           if [ -f "icon.png" ]; then
@@ -167,6 +172,8 @@ jobs:
                 base:
                   PRODUCT_BUNDLE_IDENTIFIER: com.ps5viet.translator
                   ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+                  COMPRESS_PNG_FILES: NO
+                  STRIP_PNG_TEXT: NO
                   SWIFT_OBJC_BRIDGING_HEADER: Sources/PS5Translator-Bridging-Header.h
                   HEADER_SEARCH_PATHS:
                     - "$(inherited)"
