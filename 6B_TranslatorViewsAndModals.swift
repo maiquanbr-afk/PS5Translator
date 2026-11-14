@@ -1155,6 +1155,8 @@ extension Color {
 // 1.10: Danh sách tài khoản PS5 đã liên kết + tuỳ chọn tự kết nối lại / chạy nền
 struct LinkedPS5ProfilesSection: View {
     @ObservedObject var videoMgr: VideoSourceManager
+    /// 1.23: thông báo sao lưu / khôi phục mã ghép đôi
+    @State private var backupMessage: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1214,6 +1216,46 @@ struct LinkedPS5ProfilesSection: View {
                 }
             }
 
+            // 1.23: sao lưu / khôi phục ghép đôi (dán lại sau khi cài app mới, không cần nhập PIN)
+            Text("Ghép đôi được lưu vĩnh viễn trong iPhone (cả khi cập nhật hay xoá rồi cài lại app). Tắt / bật PS5 không cần nhập lại PIN. Nên bấm Sao lưu và dán mã vào Ghi chú để phòng hờ.")
+                .font(.system(size: 12))
+                .foregroundColor(MQTheme.tertiary)
+            HStack(spacing: 10) {
+                Button(action: {
+                    if let code = videoMgr.exportPairingCode() {
+                        UIPasteboard.general.string = code
+                        backupMessage = "✅ Đã chép mã sao lưu (\(videoMgr.linkedProfiles.count) tài khoản). Dán vào Ghi chú để giữ."
+                    } else {
+                        backupMessage = "Chưa có tài khoản nào để sao lưu."
+                    }
+                }) {
+                    Label("Sao lưu", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .mqPill(false)
+                }
+                .buttonStyle(.plain)
+                Button(action: {
+                    let n = videoMgr.importPairingCode(UIPasteboard.general.string ?? "")
+                    backupMessage = n > 0
+                        ? "✅ Đã khôi phục \(n) tài khoản. Chạm Kết nối, không cần PIN."
+                        : "Không thấy mã sao lưu. Hãy chép mã bắt đầu bằng PS5T1: rồi bấm lại."
+                }) {
+                    Label("Khôi phục", systemImage: "doc.on.clipboard")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .mqPill(false)
+                }
+                .buttonStyle(.plain)
+            }
+            if !backupMessage.isEmpty {
+                Text(backupMessage)
+                    .font(.system(size: 12))
+                    .foregroundColor(MQTheme.secondary)
+            }
+
             Rectangle().fill(MQTheme.hairline).frame(height: 1)
 
             Toggle(isOn: $videoMgr.autoReconnectEnabled) {
@@ -1228,6 +1270,14 @@ struct LinkedPS5ProfilesSection: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Giữ kết nối khi thoát app ra ngoài").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
                     Text("App tiếp tục chạy nền để không mất Remote Play (tốn pin hơn)")
+                        .font(.system(size: 12)).foregroundColor(MQTheme.tertiary)
+                }
+            }
+            .tint(MQTheme.toggleOn)
+            Toggle(isOn: $videoMgr.preventAutoLock) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Không tự khoá màn hình").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                    Text("Màn hình luôn sáng khi đang kết nối PS5. Lỡ khoá máy: mở lại app sẽ tự kết nối lại.")
                         .font(.system(size: 12)).foregroundColor(MQTheme.tertiary)
                 }
             }

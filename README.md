@@ -1,4 +1,28 @@
 # PS5Translator
+## Bản 1.24 – Không bao giờ bỏ tên riêng ("Sam") trong câu thoại
+Bản 1.20 mới sửa nhãn người nói "(Sam)" bị tách rời. Bản này sửa nốt các chỗ còn làm rơi tên:
+- **Bản dịch cũ lưu trên máy:** bản dịch AI / Google đã thiếu "Sam" được lưu ra file và dùng lại mỗi lần gặp câu đó, nên sửa ở bản 1.20 không có tác dụng với câu đã dịch rồi.
+  - Đổi sang file lưu mới (`ai_translation_cache_v124.json`), bỏ hết bản dịch cũ.
+  - Bản đã lưu nào thiếu tên riêng của câu gốc thì bị bỏ và dịch lại.
+- **Google làm mất mã giữ chỗ của tên** (`ZQX0Q`): giờ nhận cả khi Google chèn khoảng trắng / đổi hoa thường. Nếu mất hẳn thì chèn lại tên: tên ở nửa đầu câu gốc thì đặt đầu câu ("Sam, đợi đã!"), ở nửa sau thì đặt cuối câu ("Cậu có đi không, Sam?").
+- **Apple Intelligence** (chế độ chỉ Apple) làm rơi tên: chèn lại tên theo cùng cách trên. Ở chế độ "Tất cả", câu thiếu tên vẫn chuyển sang Google.
+- **Câu Việt hoá trong data** thiếu tên nhân vật có trong câu gốc (1/894 câu, ví dụ "Wait, those are Sam's..." → "Khoan, đó là--"): chèn lại tên.
+- **Lời thoại chỉ gọi tên** "(Chris) Sam!" trước đây bị bỏ cả câu vì "chỉ có tên riêng". Giờ vẫn hiện, giữ nguyên "(Chris) Sam!".
+- **Nhãn "(Sam)" OCR chấm điểm thấp** (dưới 0,3) trước đây bị bỏ. Giờ luôn được gắn vào lời thoại.
+
+## Bản 1.23 – Nhớ ghép đôi PS5 vĩnh viễn, ô IP TV có dấu chấm, không mất kết nối khi khoá màn hình
+- **Ghép đôi PS5 lưu vĩnh viễn:**
+  - Khoá ghép đôi (RegistKey + RP-Key) PS5 cấp một lần và dùng mãi. Tắt / bật PS5, PS5 vào chế độ nghỉ, đổi Wi-Fi đều KHÔNG cần nhập lại 8 số. Chỉ cần nhập lại khi xoá iPhone khỏi "Thiết bị đã liên kết" trên PS5.
+  - Bản cũ chỉ lưu trong UserDefaults, nên xoá app trước khi cài bản mới là mất. Giờ app lưu thêm vào **Keychain** của iPhone (vẫn còn sau khi xoá rồi cài lại app) và tự khôi phục khi mở app.
+  - Nút **Sao lưu / Khôi phục** ở mục "Tài khoản đã liên kết": chép mã `PS5T1:...` vào Ghi chú, dán lại khi cần. Dùng khi công cụ cài app ký bằng chứng chỉ khác làm mất Keychain.
+  - Mở app: gửi gói đánh thức PS5 (Rest Mode) rồi tự kết nối bằng tài khoản đã ghép đôi.
+- **Ô IP TV Samsung:** bàn phím `.decimalPad` theo vùng Việt Nam chỉ có dấu phẩy. Đổi sang bàn phím số có dấu chấm, và tự đổi "192,168,2,3" thành "192.168.2.3".
+- **Khoá màn hình:**
+  - Công tắc mới "Không tự khoá màn hình" (mặc định BẬT): màn hình luôn sáng khi đang kết nối / đang kết nối lại PS5.
+  - Lỡ khoá máy: phiên rớt khi máy khoá không còn bị hiểu nhầm là "PS5 đổi tài khoản" (trước đây phải bấm Kết nối lại). Mở khoá là app tự kết nối lại.
+  - Phiên còn chạy nhưng mất hình sau khi mở khoá: sau 4 giây app tự khởi động lại phiên.
+  - Âm thanh im lặng giữ app chạy nền tự bật lại khi iOS ngắt (khoá máy, cuộc gọi, Siri, Control Center).
+
 ## Bản 1.22 – Sửa thẻ "Đang chơi" ở tab Game
 - Bỏ ảnh bìa nhỏ bị lệch xuống dưới khung. Ảnh bìa lớn hiện rõ (không làm mờ), cắt gọn trong khung bo tròn.
 - Tên game, nhãn "Đang chơi" và thông tin data nằm bên dưới ảnh. Chạm vào ảnh để chọn ảnh bìa khác.

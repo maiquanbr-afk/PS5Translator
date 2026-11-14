@@ -814,6 +814,10 @@ struct MQSettingsSheet: View {
                             toggleLabel("Giữ kết nối khi thoát app ra ngoài", "App tiếp tục chạy nền (tốn pin hơn)")
                         }
                         .tint(MQTheme.toggleOn)
+                        Toggle(isOn: $videoMgr.preventAutoLock) {
+                            toggleLabel("Không tự khoá màn hình", "Màn hình luôn sáng khi đang kết nối PS5, tránh mất phiên Remote Play")
+                        }
+                        .tint(MQTheme.toggleOn)
                     }
 
                     group("Data Việt hoá nhận được") {

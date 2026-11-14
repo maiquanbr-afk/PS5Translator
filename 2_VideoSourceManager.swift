@@ -1,6 +1,6 @@
 // ============================================================================
 // FILE 2B: 2_VideoSourceManager.swift (TÁCH TỪ FILE 2 - PHẦN 2/2)
-// PHIÊN BẢN: PS5Translator 1.10 (LÕI CHIAKI-NG ĐẦY ĐỦ + GHI NHỚ TÀI KHOẢN + TỰ KẾT NỐI LẠI + CHẠY NỀN)
+// PHIÊN BẢN: PS5Translator 1.23 (GHÉP ĐÔI LƯU VĨNH VIỄN TRONG KEYCHAIN + KHÔNG TỰ KHOÁ MÀN HÌNH + TỰ NỐI LẠI SAU KHI MỞ KHOÁ)
 // ============================================================================
 
 import Foundation
@@ -10,6 +10,7 @@ import Combine
 import Network
 import CryptoKit
 import WebKit
+import Security
 
 /// Thông tin ghép đôi Remote Play đã lưu cho từng tài khoản PSN (mỗi tài khoản 1 cặp khoá riêng)
 struct PS5LinkedProfile: Codable, Identifiable, Equatable {
@@ -69,6 +70,18 @@ class VideoSourceManager: NSObject, ObservableObject {
             else if isConnectedToPS5 || remoteSession.isRunning { BackgroundKeepAlive.shared.start() }
         }
     }
+
+    /// 1.23: không cho iPhone tự khoá màn hình khi đang kết nối PS5 (iOS khoá máy là mất phiên Remote Play)
+    @Published var preventAutoLock: Bool = (UserDefaults.standard.object(forKey: "ps5_prevent_autolock_v123") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(preventAutoLock, forKey: "ps5_prevent_autolock_v123")
+            updateIdleTimer()
+        }
+    }
+    /// 1.23: app đang ở nền / màn hình đã khoá (để phân biệt "mất kết nối do khoá máy" với "PS5 đổi tài khoản")
+    private var isInBackground = false
+    private var lastBackgroundAt: Date = .distantPast
+    private var droppedWhileAway = false
 
     @Published var customDialogueRect: CGRect
     @Published var customQuestRect: CGRect
@@ -136,6 +149,10 @@ class VideoSourceManager: NSObject, ObservableObject {
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillResignActive),
+                                               name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillResignActive),
+                                               name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
 
         startPS5RemoteStreamLoop()
 
@@ -921,6 +938,8 @@ class VideoSourceManager: NSObject, ObservableObject {
             let hostTitle = discoveredPS5Name.isEmpty ? "PS5 Console" : discoveredPS5Name
             let ip = activeConnection?.ip ?? ps5HostIP
             connectionState = .connected(hostName: "\(hostTitle) (\(ip))")
+            droppedWhileAway = false
+            updateIdleTimer()
             statusLog = "✅ Đã kết nối Remote Play với \(hostTitle) (\(ip)). Đang chờ khung hình đầu tiên..."
             if let acc = activeConnection?.accountBase64,
                let idx = linkedProfiles.firstIndex(where: { $0.accountBase64 == acc }) {
@@ -933,8 +952,22 @@ class VideoSourceManager: NSObject, ObservableObject {
         case .quit(let code, let message):
             isConnectedToPS5 = false
             isReceivingRealPS5Video = false
+            updateIdleTimer()
             if userRequestedDisconnect || code == PS5RP_QUIT_STOPPED {
                 connectionState = .disconnected
+                return
+            }
+            // 1.23: phiên rớt khi iPhone đang khoá màn hình / ở nền (hoặc vừa quay lại < 90 giây):
+            // đây KHÔNG phải đổi tài khoản trên PS5 -> mở lại app là tự kết nối lại, không phải bấm gì.
+            if code != 9 && (isInBackground || Date().timeIntervalSince(lastBackgroundAt) < 90) {
+                waitingForUserAccountChoice = false
+                droppedWhileAway = true
+                connectionState = .error(message: "Mất kết nối khi khoá màn hình")
+                if isInBackground && !keepAliveInBackground {
+                    statusLog = "🔄 Mất kết nối PS5 khi màn hình khoá. Mở lại app sẽ tự kết nối lại."
+                } else {
+                    scheduleReconnect(reason: "Mất kết nối khi khoá màn hình")
+                }
                 return
             }
             // 9 = CTRL_CONNECTION_REFUSED: khoá sai / thiết bị bị gỡ liên kết trên PS5
@@ -1023,6 +1056,8 @@ class VideoSourceManager: NSObject, ObservableObject {
         guard !ip.isEmpty else { return }
         applyProfileToFields(profile)
         statusLog = "🔄 \(reason): đang tự kết nối PS5 (\(ip)) bằng tài khoản '\(profile.username)'..."
+        // 1.23: PS5 đang nghỉ (Rest Mode) -> đánh thức trước bằng khoá đã ghép đôi (không cần PIN)
+        sendChiakiWakeupPacket(ip: ip)
         startChiakiNativeSession(ip: ip, registKey: profile.registKey, rpKey: profile.rpKey, accountBase64: profile.accountBase64)
     }
 
@@ -1047,19 +1082,62 @@ class VideoSourceManager: NSObject, ObservableObject {
     }
 
     @objc private func appDidBecomeActive() {
-        // Quay lại app: nếu phiên đã rớt (iOS cắt mạng khi ở nền) thì kết nối lại ngay
-        if autoReconnectEnabled && !remoteSession.isRunning && !isConnectedToPS5 && !userRequestedDisconnect
-            && !waitingForUserAccountChoice && activeConnection != nil {
+        let wasAway = isInBackground
+        isInBackground = false
+        updateIdleTimer()
+        guard autoReconnectEnabled, !userRequestedDisconnect else { return }
+        // Quay lại app / mở khoá màn hình: nếu phiên đã rớt thì kết nối lại ngay
+        if !remoteSession.isRunning && !isConnectedToPS5 && (!waitingForUserAccountChoice || droppedWhileAway) {
             reconnectAttempt = 0
-            scheduleReconnectNow()
-        } else if isConnectedToPS5 {
+            if activeConnection != nil {
+                scheduleReconnectNow()
+            } else {
+                autoConnectWithSavedProfileIfPossible(reason: "Quay lại app")
+            }
+        } else if isConnectedToPS5 || remoteSession.isRunning {
             remoteSession.requestKeyframe()
+            // 1.23: phiên "còn sống" nhưng không còn hình (socket bị iOS cắt khi khoá máy) -> tự khởi động lại
+            guard wasAway else { return }
+            let resumedAt = Date()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                guard let self = self, !self.isInBackground, !self.userRequestedDisconnect,
+                      let conn = self.activeConnection,
+                      self.lastVideoFrameTime < resumedAt else { return }
+                self.statusLog = "🔄 Không còn hình sau khi mở khoá màn hình: đang kết nối lại PS5..."
+                self.isConnectedToPS5 = false
+                self.isReceivingRealPS5Video = false
+                self.remoteSession.stop { [weak self] in
+                    DispatchQueue.main.async {
+                        self?.startChiakiNativeSession(ip: conn.ip, registKey: conn.registKey,
+                                                       rpKey: conn.rpKey, accountBase64: conn.accountBase64)
+                    }
+                }
+            }
         }
     }
 
+    @objc private func appWillResignActive() {
+        lastBackgroundAt = Date()
+    }
+
     @objc private func appDidEnterBackground() {
+        isInBackground = true
+        lastBackgroundAt = Date()
         if !keepAliveInBackground {
             BackgroundKeepAlive.shared.stop()
+        } else if isConnectedToPS5 || remoteSession.isRunning {
+            BackgroundKeepAlive.shared.start()
+        }
+    }
+
+    /// 1.23: giữ màn hình luôn sáng khi đang kết nối / đang kết nối lại PS5
+    func updateIdleTimer() {
+        let keepAwake = preventAutoLock && (isConnectedToPS5 || remoteSession.isRunning || activeConnection != nil)
+            && !userRequestedDisconnect
+        DispatchQueue.main.async {
+            if UIApplication.shared.isIdleTimerDisabled != keepAwake {
+                UIApplication.shared.isIdleTimerDisabled = keepAwake
+            }
         }
     }
 
@@ -1119,12 +1197,74 @@ class VideoSourceManager: NSObject, ObservableObject {
         if let data = try? JSONEncoder().encode(linkedProfiles) {
             UserDefaults.standard.set(data, forKey: "ps5_linked_profiles_v110")
         }
+        // 1.23: lưu thêm vào Keychain của iPhone -> cập nhật / xoá rồi cài lại app vẫn còn ghép đôi
+        PairingVault.save(PairingVault.Snapshot(profiles: linkedProfiles,
+                                                lastProfile: UserDefaults.standard.string(forKey: "ps5_last_profile_v110"),
+                                                ps5IP: ps5HostIP, ps5Name: discoveredPS5Name))
     }
 
     private static func loadProfiles() -> [PS5LinkedProfile] {
-        guard let data = UserDefaults.standard.data(forKey: "ps5_linked_profiles_v110"),
-              let list = try? JSONDecoder().decode([PS5LinkedProfile].self, from: data) else { return [] }
+        var list: [PS5LinkedProfile] = []
+        if let data = UserDefaults.standard.data(forKey: "ps5_linked_profiles_v110"),
+           let saved = try? JSONDecoder().decode([PS5LinkedProfile].self, from: data) {
+            list = saved
+        }
+        // 1.23: khôi phục từ Keychain (app mới cài lại, UserDefaults trống)
+        if let snap = PairingVault.load() {
+            for p in snap.profiles where !list.contains(where: { $0.accountBase64 == p.accountBase64 }) {
+                list.append(p)
+            }
+            if UserDefaults.standard.string(forKey: "ps5_last_profile_v110") == nil, let last = snap.lastProfile {
+                UserDefaults.standard.set(last, forKey: "ps5_last_profile_v110")
+            }
+            if UserDefaults.standard.string(forKey: "ps5_ip_v102") == nil, !snap.ps5IP.isEmpty {
+                UserDefaults.standard.set(snap.ps5IP, forKey: "ps5_ip_v102")
+            }
+            if UserDefaults.standard.string(forKey: "ps5_name_v102") == nil, !snap.ps5Name.isEmpty {
+                UserDefaults.standard.set(snap.ps5Name, forKey: "ps5_name_v102")
+            }
+        }
         return list
+    }
+
+    // MARK: - 1.23: Mã sao lưu ghép đôi (phòng khi công cụ cài app đổi chữ ký làm mất Keychain)
+
+    /// Chuỗi "PS5T1:..." chứa toàn bộ tài khoản đã ghép đôi. Dán lại vào app để khôi phục, không cần PIN.
+    func exportPairingCode() -> String? {
+        guard !linkedProfiles.isEmpty else { return nil }
+        let snap = PairingVault.Snapshot(profiles: linkedProfiles,
+                                         lastProfile: UserDefaults.standard.string(forKey: "ps5_last_profile_v110"),
+                                         ps5IP: ps5HostIP, ps5Name: discoveredPS5Name)
+        guard let data = try? JSONEncoder().encode(snap) else { return nil }
+        return "PS5T1:" + data.base64EncodedString()
+    }
+
+    /// Trả về số tài khoản khôi phục được (0 = mã sai)
+    @discardableResult
+    func importPairingCode(_ raw: String) -> Int {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let r = text.range(of: "PS5T1:") else { return 0 }
+        let b64 = String(text[r.upperBound...]).components(separatedBy: .whitespacesAndNewlines).joined()
+        guard let data = Data(base64Encoded: b64),
+              let snap = try? JSONDecoder().decode(PairingVault.Snapshot.self, from: data) else { return 0 }
+        let core = ChiakiEmbeddedCore.shared
+        var count = 0
+        for p in snap.profiles where core.isValidRegistKey(p.registKey) && core.parseRPKeyBytes(p.rpKey) != nil {
+            if let idx = linkedProfiles.firstIndex(where: { $0.accountBase64 == p.accountBase64 }) {
+                linkedProfiles[idx] = p
+            } else {
+                linkedProfiles.append(p)
+            }
+            count += 1
+        }
+        guard count > 0 else { return 0 }
+        if let last = snap.lastProfile { UserDefaults.standard.set(last, forKey: "ps5_last_profile_v110") }
+        if !snap.ps5IP.isEmpty { ps5HostIP = snap.ps5IP }
+        if !snap.ps5Name.isEmpty { discoveredPS5Name = snap.ps5Name }
+        if let p = preferredProfile() { applyProfileToFields(p) }
+        saveProfiles()
+        statusLog = "✅ Đã khôi phục \(count) tài khoản đã ghép đôi. Chạm vào tài khoản để kết nối, không cần mã PIN."
+        return count
     }
 
     func disconnectPS5() {
@@ -1140,6 +1280,7 @@ class VideoSourceManager: NSObject, ObservableObject {
         isReceivingRealPS5Video = false
         connectionState = .disconnected
         statusLog = "Đã ngắt kết nối PS5."
+        updateIdleTimer()
     }
 
     func startPS5RemoteStreamLoop() {
@@ -1170,5 +1311,56 @@ class VideoSourceManager: NSObject, ObservableObject {
             rect.lineWidth = 2.0
             rect.stroke()
         }.cgImage
+    }
+}
+
+
+// MARK: - 1.23: Kho lưu ghép đôi trong Keychain
+
+/// Khoá ghép đôi Remote Play (RegistKey + RP-Key) do PS5 cấp là VĨNH VIỄN: tắt / bật PS5, đổi mạng,
+/// cập nhật app đều không làm mất. Chỉ cần nhập PIN lại khi xoá iPhone khỏi "Thiết bị đã liên kết" trên PS5.
+/// Bản cũ chỉ lưu trong UserDefaults -> mất khi xoá app trước khi cài bản mới. Keychain còn lại sau khi xoá app.
+enum PairingVault {
+    struct Snapshot: Codable {
+        var profiles: [PS5LinkedProfile]
+        var lastProfile: String?
+        var ps5IP: String
+        var ps5Name: String
+    }
+
+    private static let service = "com.ps5viet.translator.pairing"
+    private static let account = "linked_profiles_v1"
+
+    static func save(_ snap: Snapshot) {
+        guard let data = try? JSONEncoder().encode(snap) else { return }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        let attrs: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = query
+            for (k, v) in attrs { add[k] = v }
+            SecItemAdd(add as CFDictionary, nil)
+        }
+    }
+
+    static func load() -> Snapshot? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
+              let data = out as? Data else { return nil }
+        return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
 }

@@ -913,7 +913,7 @@ enum TVDiscovery {
 
 @MainActor
 final class TVInstallerModel: ObservableObject {
-    @Published var tvIP: String = UserDefaults.standard.string(forKey: "tv_installer_ip") ?? ""
+    @Published var tvIP: String = TVIPInput.normalize(UserDefaults.standard.string(forKey: "tv_installer_ip") ?? "")
     @Published var foundTVs: [FoundTV] = []
     @Published var isScanning = false
     @Published var isWorking = false
@@ -980,7 +980,8 @@ final class TVInstallerModel: ObservableObject {
 
     func install() {
         guard !isWorking else { return }
-        let tv = tvIP.trimmingCharacters(in: .whitespaces)
+        let tv = TVIPInput.normalize(tvIP)
+        if tv != tvIP { tvIP = tv }
         let phone = iphoneIP
         guard tv.split(separator: ".").count == 4 else { say("✗ Nhập IP của TV trước."); return }
         guard !phone.isEmpty else { say("✗ iPhone chưa kết nối Wi-Fi."); return }
@@ -1187,8 +1188,16 @@ struct TVInstallerView: View {
                 }
                 .buttonStyle(.plain)
             }
+            // 1.23: bàn phím .decimalPad theo vùng Việt Nam chỉ có dấu PHẨY -> không gõ được IP.
+            // Dùng bàn phím số + dấu chấm, và tự đổi "," thành "." nếu người dùng gõ phẩy.
             TextField("IP của TV, ví dụ 192.168.1.20", text: $model.tvIP)
-                .keyboardType(.decimalPad)
+                .keyboardType(.numbersAndPunctuation)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+                .onChange(of: model.tvIP) { newValue in
+                    let fixed = TVIPInput.normalize(newValue)
+                    if fixed != newValue { model.tvIP = fixed }
+                }
                 .font(.system(.body, design: .monospaced))
                 .padding(10)
                 .background(Color.white.opacity(0.08))
@@ -1253,5 +1262,18 @@ struct TVInstallerView: View {
         .padding(12)
         .background(Color.white.opacity(0.06))
         .cornerRadius(12)
+    }
+}
+
+
+/// 1.23: chuẩn hoá chữ gõ vào ô IP: "192,168,2,3" -> "192.168.2.3", bỏ khoảng trắng và ký tự lạ
+enum TVIPInput {
+    static func normalize(_ text: String) -> String {
+        var out = ""
+        for ch in text {
+            if ch.isASCII && ch.isNumber { out.append(ch) }
+            else if ch == "." || ch == "," || ch == "·" || ch == "٫" { out.append(".") }
+        }
+        return out
     }
 }

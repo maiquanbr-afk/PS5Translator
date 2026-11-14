@@ -364,9 +364,52 @@ final class BackgroundKeepAlive {
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private(set) var isActive = false
+    /// 1.23: người dùng/kết nối muốn chạy nền (để tự bật lại khi iOS ngắt âm thanh: khoá màn hình, cuộc gọi, Siri...)
+    private var wanted = false
+    private var observersInstalled = false
+
+    private func installObservers() {
+        guard !observersInstalled else { return }
+        observersInstalled = true
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self = self, self.wanted else { return }
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            if raw == AVAudioSession.InterruptionType.ended.rawValue { self.restart() }
+            else { self.markStopped() }
+        }
+        nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, self.wanted else { return }
+            self.markStopped(); self.restart()
+        }
+        nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, self.wanted else { return }
+            self.markStopped(); self.restart()
+        }
+        nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            // vào nền / khoá màn hình: chắc chắn âm thanh im lặng đang chạy, nếu không iOS sẽ treo app sau vài giây
+            guard let self = self, self.wanted else { return }
+            if self.engine?.isRunning != true { self.markStopped(); self.restart() }
+        }
+    }
+
+    private func markStopped() {
+        player?.stop(); engine?.stop()
+        player = nil; engine = nil
+        isActive = false
+    }
+
+    private func restart() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self, self.wanted, !self.isActive else { return }
+            self.start()
+        }
+    }
 
     /// Phát âm thanh im lặng liên tục (cần UIBackgroundModes = audio trong Info.plist).
     func start() {
+        wanted = true
+        installObservers()
         guard !isActive else { return }
         do {
             let audioSession = AVAudioSession.sharedInstance()
@@ -397,6 +440,7 @@ final class BackgroundKeepAlive {
     }
 
     func stop() {
+        wanted = false
         guard isActive else { return }
         player?.stop()
         engine?.stop()
