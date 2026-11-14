@@ -162,6 +162,9 @@ struct GameLibraryView: View {
     @State private var showImporter = false
     @State private var confirmDelete: GameProfileFolder?
     @State private var searchText = ""
+    /// 1.26: một fileImporter dùng chung cho nạp data / chọn thư mục sao lưu / khôi phục
+    @State private var pickMode: PickMode = .data
+    private enum PickMode { case data, backupFolder, restoreFolder }
 
     private var filteredProfiles: [GameProfileFolder] {
         let q = searchText.trimmingCharacters(in: .whitespaces)
@@ -225,11 +228,39 @@ struct GameLibraryView: View {
                     actionRow(icon: "square.and.arrow.down", title: "Nạp file data cho \(coord.activeProfileFolderName)",
                               subtitle: ".sqlite, .db, .csv, .tsv, .txt · từ Tệp / iCloud Drive") {
                         importTargetFolder = coord.activeProfileFolderName
+                        pickMode = .data
                         showImporter = true
                     }
                     Rectangle().fill(MQTheme.hairline).frame(height: 1)
                     actionRow(icon: "plus", title: "Thêm game mới", subtitle: "Tên game + data Việt hoá (chưa có data thì dịch bằng AI)") {
                         showAddGame = true
+                    }
+                }
+                .padding(.horizontal, 14)
+                .mqGlass(24)
+
+                // 1.26: sao lưu / khôi phục data game (giữ data khi cài bản app mới)
+                sectionTitle("Sao lưu data")
+                VStack(spacing: 0) {
+                    actionRow(icon: "externaldrive.badge.icloud",
+                              title: DataBackup.isConfigured ? "Sao lưu ngay" : "Chọn thư mục sao lưu",
+                              subtitle: DataBackup.isConfigured ? "Tự sao lưu khi data thay đổi · \(DataBackup.lastBackupText)"
+                                                                : "Chọn 1 thư mục trong Tệp (Trên iPhone / iCloud Drive), app sẽ tự sao lưu vào đó") {
+                        if DataBackup.isConfigured { coord.backupDataNow() }
+                        else { pickMode = .backupFolder; showImporter = true }
+                    }
+                    Rectangle().fill(MQTheme.hairline).frame(height: 1)
+                    actionRow(icon: "arrow.counterclockwise", title: "Khôi phục data",
+                              subtitle: "Sau khi cài bản app mới: chọn thư mục \"\(DataBackup.backupFolderName)\" đã sao lưu") {
+                        pickMode = .restoreFolder
+                        showImporter = true
+                    }
+                    if DataBackup.isConfigured {
+                        Rectangle().fill(MQTheme.hairline).frame(height: 1)
+                        actionRow(icon: "folder", title: "Đổi thư mục sao lưu", subtitle: "Chọn nơi khác để lưu bản sao") {
+                            pickMode = .backupFolder
+                            showImporter = true
+                        }
                     }
                 }
                 .padding(.horizontal, 14)
@@ -246,10 +277,17 @@ struct GameLibraryView: View {
         .sheet(isPresented: $showAddGame) {
             AddGameSheet(coord: coord)
         }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: DataTypes.allowed, allowsMultipleSelection: false) { result in
+        .fileImporter(isPresented: $showImporter,
+                      allowedContentTypes: pickMode == .data ? DataTypes.allowed : [.folder],
+                      allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first {
-                coord.importDataIntoProfileFolder(folderName: importTargetFolder, sourceURL: url)
+                switch pickMode {
+                case .data: coord.importDataIntoProfileFolder(folderName: importTargetFolder, sourceURL: url)
+                case .backupFolder: coord.chooseBackupFolder(url)
+                case .restoreFolder: coord.restoreData(from: url)
+                }
             }
+            pickMode = .data
         }
         .alert(item: $confirmDelete) { profile in
             Alert(

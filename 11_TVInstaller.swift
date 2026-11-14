@@ -728,8 +728,27 @@ enum TVAppSource {
             ("config.xml", try resource("tv_app_config", "xml")),
             ("index.html", try resource("tv_app_index", "html")),
             ("tv_main.js", Data(js.utf8)),
-            ("icon.png", try resource("tv_app_icon", "png")),
+            ("icon.png", try tvIcon()),
         ]
+    }
+
+    /// 1.25: Icon app TV.
+    /// Xcode tự "tối ưu" mọi file .png trong app iOS sang định dạng riêng của Apple (CgBI) — TV Samsung
+    /// không đọc được nên app cài từ iPhone không có icon. Vì vậy icon được đóng gói với đuôi .bin
+    /// (Xcode không đụng tới) và được kiểm tra lại là PNG chuẩn trước khi gửi sang TV.
+    static func tvIcon() throws -> Data {
+        // 1.26: icon nhúng trong mã Swift (11B_TVAppIcon.swift) -> luôn có, luôn là PNG chuẩn
+        var candidates: [Data] = []
+        if let embedded = TVAppIconData.png { candidates.append(embedded) }
+        if let d = try? resource("tv_app_icon", "bin") { candidates.append(d) }
+        if let d = try? resource("tv_app_icon", "png") { candidates.append(d) }
+        let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        for data in candidates where data.count > 33 && Array(data.prefix(8)) == signature {
+            // PNG chuẩn: chunk đầu là IHDR; bản bị Xcode biến đổi có chunk "CgBI" đứng trước
+            let firstChunk = String(decoding: data[data.startIndex + 12 ..< data.startIndex + 16], as: UTF8.self)
+            if firstChunk == "IHDR" { return data }
+        }
+        throw TVInstallError("Không có icon PNG chuẩn cho app TV trong app iPhone")
     }
 }
 

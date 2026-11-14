@@ -964,6 +964,7 @@ class PipelineCoordinator: ObservableObject {
         let folderURL = profilesRootURL.appendingPathComponent(cleanName, isDirectory: true)
         try? FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
         refreshGameProfileFolders()
+        DataBackup.scheduleAutoBackup()
     }
 
     func importSQLiteIntoProfileFolder(folderName: String, sourceURL: URL) {
@@ -1008,6 +1009,7 @@ class PipelineCoordinator: ObservableObject {
 
         UserDefaults.standard.set(folderName, forKey: "active_profile_folder_v102")
         refreshGameProfileFolders()
+        DataBackup.scheduleAutoBackup()   // 1.26: tự sao lưu data ra app Tệp
     }
 
     func deleteGameProfileFolder(folderName: String) {
@@ -1015,6 +1017,7 @@ class PipelineCoordinator: ObservableObject {
         let folderURL = profilesRootURL.appendingPathComponent(folderName, isDirectory: true)
         try? FileManager.default.removeItem(at: folderURL)
         refreshGameProfileFolders()
+        DataBackup.scheduleAutoBackup()
     }
 
     // MARK: - 1.11: Luồng quét chữ thông minh (lọc rác, giữ khung ổn định, khớp kiểu chữ gốc)

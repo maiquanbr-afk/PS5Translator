@@ -1,4 +1,19 @@
 # PS5Translator
+## Bản 1.26 – Sửa lỗi "Thiếu file tv_app_icon.png", sao lưu / khôi phục data game
+- **Cài app TV từ iPhone:** bản 1.25 đổi icon thành `.bin` nhưng Xcode không chép file `.bin` vào app → lỗi
+  "Thiếu file tv_app_icon.png". Bản 1.26 nhúng icon PNG thẳng vào mã Swift (`11B_TVAppIcon.swift`),
+  không phụ thuộc bước build nào nữa, TV luôn nhận PNG chuẩn → có icon.
+- **Data Việt hoá mất sau khi cập nhật app:** data nằm trong thư mục của app; nếu cách cài bản mới làm iOS xoá app cũ
+  (ký lại bằng chứng chỉ/Apple ID khác, đổi bundle ID, phải xoá app trước khi cài) thì data bị xoá theo.
+  Thêm mục **Thư viện game → Sao lưu data**: chọn 1 thư mục trong app Tệp, app tự sao lưu mỗi khi data thay đổi;
+  sau khi cài bản mới bấm **Khôi phục data** và chọn lại thư mục `PS5Translator_SaoLuu`.
+
+## Bản 1.25 – Sửa app TV cài từ iPhone không có icon
+- Nguyên nhân: khi build app iOS, Xcode tự chuyển mọi file .png lẻ sang định dạng PNG riêng của Apple (CgBI).
+  Icon app TV đi qua bước này nên TV Samsung không đọc được → app TV không có icon.
+- Sửa: workflow đổi `tv_app_icon.png` thành `tv_app_icon.bin` trong app (Xcode không đụng tới), tắt `COMPRESS_PNG_FILES`,
+  và bộ cài kiểm tra icon là PNG chuẩn trước khi gửi sang TV. App TV lên bản 1.0.20.
+
 ## Bản 1.24 – Không bao giờ bỏ tên riêng ("Sam") trong câu thoại
 Bản 1.20 mới sửa nhãn người nói "(Sam)" bị tách rời. Bản này sửa nốt các chỗ còn làm rơi tên:
 - **Bản dịch cũ lưu trên máy:** bản dịch AI / Google đã thiếu "Sam" được lưu ra file và dùng lại mỗi lần gặp câu đó, nên sửa ở bản 1.20 không có tác dụng với câu đã dịch rồi.
