@@ -484,9 +484,7 @@ struct ScanLogHistorySheet: View {
 extension TranslationEngineMode {
     var shortTitle: String {
         switch self {
-        case .appleThenGoogle: return "Tất cả"
-        case .appleOnly: return "Apple AI"
-        case .googleOnly: return "Google"
+        case .appleThenGoogle, .appleOnly, .googleOnly: return "Data + AI"
         case .offline: return "Chỉ data"
         }
     }
@@ -652,7 +650,7 @@ struct GamePlayingView: View {
                 .frame(width: 34, height: 34)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MQTheme.pearl))
             VStack(alignment: .leading, spacing: 3) {
-                Text("Tất cả: Data Việt hoá → Apple AI → Google")
+                Text("Data Việt hoá → AI iPhone (không dùng Google)")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.white)
                 Text(OnDeviceAITranslator.shared.statusText)

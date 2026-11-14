@@ -22,7 +22,7 @@ import SQLite3
 // 1. THÔNG SỐ CẤU HÌNH PHIÊN BẢN PS5TRANSLATOR 1.02 (Đặt ở đầu file)
 // ============================================================================
 struct TranslatorV102Config {
-    static let appVersionName = "PS5Translator 1.24"
+    static let appVersionName = "PS5Translator 1.28"
     static let tvTestSentence = "phụ đề tiếng Việt như thế này"
     static let defaultScanFPS: Double = 6.0
     static let minScanFPS: Double = 1.0
@@ -399,6 +399,9 @@ final class AppleIntelligenceFallbackEngine {
         pendingRequests.insert(key)
         lock.unlock()
 
+        // 1.28: đã bỏ Google Dịch (bộ dịch cũ này không còn được dùng)
+        lock.lock(); pendingRequests.remove(key); lock.unlock()
+        return
         guard let encoded = original.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlQueryAllowed),
               let url = URL(string: "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=\(encoded)") else {
             return
@@ -639,7 +642,7 @@ class PipelineCoordinator: ObservableObject {
         }
     }
     /// 1.12: Bộ dịch AI (Apple Intelligence trên iPhone / Google online)
-    /// 1.21: luôn dùng "Tất cả" (Data Việt hoá → Apple Intelligence → Google), đã bỏ nút chọn bộ dịch
+    /// 1.28: luôn dùng Data Việt hoá → Apple Intelligence trên iPhone (đã bỏ Google Dịch)
     @Published var translationEngineMode: TranslationEngineMode = .appleThenGoogle {
         didSet {
             UserDefaults.standard.set(translationEngineMode.rawValue, forKey: "translation_engine_v115")
@@ -1003,6 +1006,8 @@ class PipelineCoordinator: ObservableObject {
             loadedLineCount = 0
             databaseReport = "Game này chưa có data Việt hoá → dịch bằng AI"
             properNames = []
+            smartEngine.clearDatabase()      // 1.28: không dùng data của game trước
+            youtubeEngine.clearDatabase()
             smartEngine.gameTitle = folderName
             youtubeEngine.gameTitle = folderName
         }

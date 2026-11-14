@@ -6,7 +6,7 @@
 // - Không cần Internet, hiểu ngữ cảnh: tên game, thoại / menu / nhiệm vụ, người nói,
 //   các câu thoại trước đó, danh sách tên riêng phải giữ nguyên.
 // - Máy không hỗ trợ (chưa iOS 26, chưa bật Apple Intelligence, máy đời cũ, model chưa
-//   tải xong, hoặc model từ chối câu) -> tự chuyển sang Google Dịch (nếu được chọn).
+//   tải xong, hoặc model từ chối câu) -> chỉ dịch bằng data Việt hoá (1.28: đã bỏ Google Dịch).
 // ============================================================================
 
 import Foundation
@@ -22,21 +22,19 @@ enum TranslationEngineMode: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    // 1.28: ĐÃ BỎ Google Dịch. Các lựa chọn cũ (Tất cả / Apple / Google) đều chạy "Data Việt hoá → AI iPhone"
     var title: String {
         switch self {
-        case .appleThenGoogle: return "Dùng chung tất cả (khuyên dùng)"
-        case .appleOnly: return "Data + Apple Intelligence"
-        case .googleOnly: return "Data + Google Dịch"
+        case .appleThenGoogle, .appleOnly, .googleOnly: return "Data Việt hoá → AI iPhone"
         case .offline: return "Chỉ data Việt hoá"
         }
     }
 
     var detail: String {
         switch self {
-        case .appleThenGoogle: return "Thứ tự: Data Việt hoá → Apple Intelligence → Google Dịch. Câu có trong data lấy data; câu không có (lựa chọn, câu thiếu tiếng Anh) dịch bằng AI trên iPhone; AI không dịch được hoặc quá chậm thì dùng Google."
-        case .appleOnly: return "Data Việt hoá → Apple Intelligence. Không gửi chữ lên Internet."
-        case .googleOnly: return "Data Việt hoá → Google Dịch (qua Internet, kém hiểu ngữ cảnh game hơn)."
-        case .offline: return "Chỉ hiện câu có trong data Việt hoá và từ điển menu. Lựa chọn / câu thiếu trong data sẽ KHÔNG được dịch."
+        case .appleThenGoogle, .appleOnly, .googleOnly:
+            return "Câu có trong data Việt hoá (khớp chữ hoặc khớp nghĩa) lấy data; câu không có thì Apple Intelligence trên iPhone dịch theo văn phong data. Không gửi chữ lên Internet."
+        case .offline: return "Chỉ hiện câu có trong data Việt hoá và từ điển menu."
         }
     }
 }
@@ -47,6 +45,10 @@ struct AITranslationContext {
     var speaker: String?
     var protectedWords: [String]
     var previousLines: [String]
+    /// 1.27: câu Việt hoá chính thức của game giống câu cần dịch (học xưng hô, văn phong, thuật ngữ)
+    var examples: [(en: String, vi: String)] = []
+    /// 1.28: câu Việt hoá CÓ THỂ cùng nghĩa (data dịch ngược nên chữ Anh khác bản gốc) -> cùng nghĩa thì dùng nguyên văn
+    var sameMeaningCandidates: [(en: String, vi: String)] = []
 }
 
 final class OnDeviceAITranslator {
@@ -67,10 +69,10 @@ final class OnDeviceAITranslator {
             case .available:
                 return supportsVietnamese
                     ? "✅ Apple Intelligence sẵn sàng (dịch trên máy)"
-                    : "⚠️ Apple Intelligence trên máy này chưa hỗ trợ tiếng Việt → dùng Google"
+                    : "⚠️ Apple Intelligence trên máy này chưa hỗ trợ tiếng Việt → chỉ dịch bằng data"
             case .unavailable(let reason):
                 switch reason {
-                case .deviceNotEligible: return "❌ iPhone này không hỗ trợ Apple Intelligence → dùng Google"
+                case .deviceNotEligible: return "❌ iPhone này không hỗ trợ Apple Intelligence → chỉ dịch bằng data"
                 case .appleIntelligenceNotEnabled: return "⚠️ Chưa bật Apple Intelligence (Cài đặt > Apple Intelligence & Siri)"
                 case .modelNotReady: return "⏳ Apple Intelligence đang tải model, thử lại sau ít phút"
                 @unknown default: return "⚠️ Apple Intelligence chưa sẵn sàng"
@@ -79,9 +81,9 @@ final class OnDeviceAITranslator {
                 return "⚠️ Apple Intelligence chưa sẵn sàng"
             }
         }
-        return "❌ Cần iOS 26 trở lên để dùng Apple Intelligence → dùng Google"
+        return "❌ Cần iOS 26 trở lên để dùng Apple Intelligence → chỉ dịch bằng data"
         #else
-        return "❌ Bản build chưa có Foundation Models (cần Xcode 26) → dùng Google"
+        return "❌ Bản build chưa có Foundation Models (cần Xcode 26) → chỉ dịch bằng data"
         #endif
     }
 
@@ -104,7 +106,7 @@ final class OnDeviceAITranslator {
         return false
     }
 
-    /// completion: bản dịch, hoặc nil nếu không dịch được (để chuyển sang Google)
+    /// completion: bản dịch, hoặc nil nếu không dịch được
     func translate(_ text: String, key: String, context: AITranslationContext, completion: @escaping (String?) -> Void) {
         lock.lock()
         if pending.contains(key) { lock.unlock(); return }
@@ -137,16 +139,19 @@ final class OnDeviceAITranslator {
                     let session = LanguageModelSession(instructions: """
                     Bạn là dịch giả Việt hoá game chuyên nghiệp. Nhiệm vụ: dịch chữ tiếng Anh xuất hiện trong game sang tiếng Việt.
                     Quy tắc:
-                    - Dịch tự nhiên, đúng ngữ cảnh game. Lời thoại dùng văn nói, xưng hô hợp với nhân vật trẻ (tớ/cậu, tao/mày khi cãi nhau, anh/em khi thân mật).
+                    - Dịch sát nghĩa nhưng tự nhiên, đúng bối cảnh và giọng nhân vật. Lời thoại dùng văn nói.
+                    - Xưng hô, văn phong và cách dịch thuật ngữ PHẢI theo các câu Việt hoá mẫu của game nếu được đưa kèm.
+                    - Không dùng "bạn" trong lời thoại giữa các nhân vật; chọn xưng hô theo quan hệ (ta/con, ta/ngươi, tôi/bà, mày/tao...).
                     - Menu, nút, nhiệm vụ: dịch ngắn gọn như trong game Việt hoá.
-                    - GIỮ NGUYÊN tên riêng (tên người, địa danh, tên vật phẩm riêng), tên nút tay cầm (L1, R2, X, O...), con số.
-                    - KHÔNG được bỏ bớt tên người có trong câu gốc: câu gốc có "Sam" thì câu dịch cũng phải có "Sam".
+                    - Giữ nguyên tên riêng có trong câu gốc, tên nút tay cầm (L1, R2, X, O...), con số.
+                    - TUYỆT ĐỐI không thêm tên người hay chi tiết nào không có trong câu gốc. Không bỏ bớt ý.
+                    - Không lặp lại tên người nói ở đầu câu dịch.
                     - Chỉ trả về đúng câu tiếng Việt, không giải thích, không thêm dấu ngoặc kép.
                     """)
                     let response = try await session.respond(to: prompt, options: GenerationOptions(temperature: 0.2))
                     result = Self.clean(response.content, original: text)
                 } catch {
-                    result = nil   // từ chối / lỗi -> để Google dịch
+                    result = nil   // từ chối / lỗi
                 }
                 self?.finish(key: key)
                 completion(result)
@@ -188,8 +193,18 @@ final class OnDeviceAITranslator {
             lines.append("Các câu thoại ngay trước đó (chỉ để hiểu ngữ cảnh, KHÔNG dịch):")
             for l in context.previousLines.suffix(3) { lines.append("- \(l)") }
         }
-        let names = Array(Set(context.protectedWords)).prefix(30)
-        if !names.isEmpty { lines.append("Tên riêng giữ nguyên: \(names.joined(separator: ", "))") }
+        if !context.sameMeaningCandidates.isEmpty {
+            lines.append("Bản Việt hoá chính thức có thể đã có câu này (phần tiếng Anh của data là bản dịch ngược nên chữ có thể khác câu cần dịch).")
+            lines.append("Nếu câu cần dịch CÙNG NGHĨA với một câu dưới đây, trả về NGUYÊN VĂN câu tiếng Việt của câu đó, không sửa chữ nào:")
+            for e in context.sameMeaningCandidates.prefix(3) { lines.append("- \(e.en) => \(e.vi)") }
+            lines.append("Nếu không câu nào cùng nghĩa thì tự dịch.")
+        }
+        if !context.examples.isEmpty {
+            lines.append("Câu Việt hoá mẫu của game (theo đúng xưng hô, văn phong, thuật ngữ):")
+            for e in context.examples.prefix(4) { lines.append("- \(e.en) => \(e.vi)") }
+        }
+        let names = Array(Set(context.protectedWords)).prefix(12)
+        if !names.isEmpty { lines.append("Tên riêng trong câu (giữ nguyên): \(names.joined(separator: ", "))") }
         lines.append("Câu cần dịch: \(text)")
         lines.append("Bản dịch tiếng Việt:")
         return lines.joined(separator: "\n")

@@ -1,6 +1,6 @@
 // ============================================================================
 // FILE 7: 7_SmartSubtitleEngine.swift
-// PHIÊN BẢN: PS5Translator 1.24 (KHÔNG BAO GIỜ BỎ TÊN RIÊNG TRONG CÂU THOẠI: "Sam")
+// PHIÊN BẢN: PS5Translator 1.28 (CHỈ DATA + AI IPHONE, KHỚP DATA THEO NGHĨA, MỖI GAME 1 DATA RIÊNG)
 //
 // Luồng xử lý mỗi lần quét:
 //  1. OCR Apple Vision (.accurate) -> lấy từng DÒNG + toạ độ TỪNG TỪ.
@@ -20,6 +20,7 @@
 
 import Foundation
 import Vision
+import NaturalLanguage
 import CoreGraphics
 import UIKit
 import SQLite3
@@ -138,12 +139,8 @@ enum GameVocabulary {
     ]
 
     /// Tên riêng có sẵn (Until Dawn) - không dịch. Data Việt hoá có thể bổ sung qua bảng glossary.
-    static let builtInNames: Set<String> = [
-        "sam", "samantha", "mike", "michael", "jessica", "jess", "josh", "joshua", "chris", "christopher",
-        "ashley", "emily", "em", "matt", "matthew", "hannah", "beth", "bethany", "hill", "alan",
-        "washington", "blackwood", "jefferson", "billy", "bates", "stranger", "wendigo", "alberta",
-        "ranger", "sanatorium", "mia", "lindsay"
-    ]
+    // 1.28: KHÔNG còn danh sách tên gõ sẵn trong app. Tên riêng chỉ lấy từ bảng glossary
+    // trong data Việt hoá của game đang chọn (mỗi game 1 file data riêng, không dùng chéo).
 }
 
 // MARK: - Bộ lọc chữ "rác"
@@ -182,9 +179,39 @@ final class GameTextFilter {
         return w
     }
 
+    /// 1.27: tên nhân vật gần đúng nhất (sai 1 ký tự, hoặc I/l/1 thay cho T/I...) -> tên viết hoa chuẩn
+    func closestName(_ raw: String) -> String? {
+        let w = raw.lowercased()
+        guard w.count >= 4, w.count <= 14, w.allSatisfy({ $0.isLetter || $0 == "-" }) else { return nil }
+        let pool = extraNames
+        var best: String?
+        for n in pool where abs(n.count - w.count) <= 1 && n.count >= 4 {
+            if Self.editDistance(Array(w), Array(n)) <= 1 {
+                if best != nil { return nil }   // 2 tên cùng gần -> không đoán
+                best = n
+            }
+        }
+        return best.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+    }
+
+    static func editDistance(_ a: [Character], _ b: [Character]) -> Int {
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var prev = Array(0...b.count)
+        for i in 1...a.count {
+            var cur = [i] + Array(repeating: 0, count: b.count)
+            for j in 1...b.count {
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+            }
+            prev = cur
+        }
+        return prev[b.count]
+    }
+
     func isName(_ raw: String) -> Bool {
         let w = Self.stripPossessive(raw).lowercased()
-        return GameVocabulary.builtInNames.contains(w) || extraNames.contains(w)
+        // 1.28: chỉ tên trong data của game đang chọn
+        return extraNames.contains(w)
     }
 
     /// Phân tích 1 dòng / 1 đoạn chữ xem có phải chữ thật cần dịch không
@@ -424,8 +451,14 @@ enum PieceBuilder {
         // "Ashley: Hello"
         if let colon = text.firstIndex(of: ":"), text.distance(from: text.startIndex, to: colon) <= 22 {
             let name = text[..<colon].trimmingCharacters(in: .whitespaces)
-            if !name.isEmpty, name.split(separator: " ").allSatisfy({ filter.isName(String($0)) }) {
-                return (name, name + ":", String(text[text.index(after: colon)...]).trimmingCharacters(in: .whitespaces))
+            let rest = String(text[text.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            let parts = name.split(separator: " ").map(String.init)
+            if !name.isEmpty, parts.allSatisfy({ filter.isName($0) }) {
+                return (name, name + ":", rest)
+            }
+            // 1.27: OCR đọc sai 1 chữ của tên người nói: "leersa:" -> "Teersa:", "Rcst:" -> "Rost:"
+            if parts.count == 1, !rest.isEmpty, let fixed = filter.closestName(name) {
+                return (fixed, fixed + ":", rest)
             }
         }
         return (nil, nil, text)
@@ -499,7 +532,7 @@ enum PieceBuilder {
             let hPx = line.rect.height * refH
             // 1.16: quá nhỏ (số HUD) hoặc CHỮ TO (tên nhân vật "SAM", tiêu đề chương "MEMENTO MORI")
             // -> không dịch để không che màn hình game
-            guard hPx >= 7.5, hPx <= 50 else { continue }
+            guard hPx >= 7.5 else { continue }   // 1.28: bỏ giới hạn chữ to (quét trên điện thoại)
             // 1.16: chữ in trên vật phẩm 3D (lá thư, biển báo, chữ viết tay) thường nghiêng / méo phối cảnh
             if line.skewDegrees > 3.0 || line.shearRatio > 0.22 { continue }
 
@@ -640,9 +673,14 @@ final class TranslationMemory {
     private var lastIndex: Int = -1
     /// 1.14: Bảng ghép câu Anh ↔ câu Việt bên trong mỗi dòng data (tính khi cần)
     private var alignCache: [Int: [(tokStart: Int, tokEnd: Int, vi: String)]] = [:]
+    /// 1.28: chỉ mục theo GỐC TỪ (bỏ từ phổ biến) cho khớp theo nghĩa
+    private var stemInverted: [String: [Int]] = [:]
+    /// 1.28: vector nghĩa của từng câu trong data (tính khi cần, lưu lại)
+    private var embedCache: [Int: [Double]] = [:]
+    private lazy var sentenceEmbedding: NLEmbedding? = NLEmbedding.sentenceEmbedding(for: .english)
 
     struct Match {
-        enum Kind { case exact, fuzzy, fragment }
+        enum Kind { case exact, fuzzy, fragment, semantic }
         let vi: String
         let index: Int
         let kind: Kind
@@ -785,6 +823,11 @@ final class TranslationMemory {
         return rep
     }
 
+    /// 1.28: bỏ data đang nạp (đổi sang game chưa có data)
+    func clear() {
+        install(entries: [], names: [], report: TranslationDBReport())
+    }
+
     private func install(entries newEntries: [(norm: String, tokens: [String], vi: String, en: String)], names: Set<String>, report rep: TranslationDBReport) {
         var ex: [String: [Int]] = [:]
         var inv: [String: [Int]] = [:]
@@ -794,10 +837,16 @@ final class TranslationMemory {
                 inv[t, default: []].append(i)
             }
         }
+        var stemInv: [String: [Int]] = [:]
+        for (i, e) in newEntries.enumerated() {
+            for st in Set(Self.contentStems(e.tokens)) { stemInv[st, default: []].append(i) }
+        }
         lock.lock()
         entries = newEntries
         exact = ex
         inverted = inv
+        stemInverted = stemInv
+        embedCache.removeAll()
         lastIndex = -1
         alignCache.removeAll()
         self.names = names
@@ -821,6 +870,27 @@ final class TranslationMemory {
     ///  2. Gần đúng (OCR sai vài ký tự)
     ///  3. ĐOẠN CÂU: game chia câu dài thành nhiều đoạn hiện lần lượt ("…all by yourself?")
     ///     -> tìm câu trong data chứa liền mạch đoạn đó, ưu tiên câu vừa khớp / câu kế tiếp.
+    /// 1.27: câu Việt hoá CHÍNH THỨC giống câu cần dịch nhất (nhiều từ hiếm trùng nhau) -> làm ví dụ cho AI
+    /// học cách xưng hô, văn phong, cách dịch thuật ngữ của game ("All-Mother" -> "Mẹ Chúng Sinh").
+    func examples(for english: String, limit: Int = 4) -> [(en: String, vi: String)] {
+        let toks = Array(Set(Self.normalize(english).split(separator: " ").map(String.init)))
+        lock.lock(); defer { lock.unlock() }
+        guard !entries.isEmpty else { return [] }
+        let n = Double(entries.count)
+        var score: [Int: Double] = [:]
+        for t in toks where t.count >= 3 {
+            guard let list = inverted[t], !list.isEmpty, Double(list.count) < n * 0.25 else { continue }
+            let idf = log(n / Double(list.count))
+            for i in Set(list) { score[i, default: 0] += idf }
+        }
+        let top = score.filter { $0.value >= 2.0 }.sorted { $0.value > $1.value }.prefix(limit)
+        return top.compactMap { item in
+            let e = entries[item.key]
+            guard e.en.count <= 220, e.vi.count <= 260 else { return nil }
+            return (e.en, e.vi)
+        }
+    }
+
     func lookupMatch(_ english: String) -> Match? {
         let n = Self.normalize(english)
         guard !n.isEmpty else { return nil }
@@ -905,7 +975,155 @@ final class TranslationMemory {
                 return Match(vi: sentenceSlice(first, start: start, length: q.count), index: first, kind: .fragment)
             }
         }
+
+        // 4. 1.28: KHỚP THEO NGHĨA - data dịch ngược từ tiếng Việt / tiếng khác nên chữ Anh khác bản gốc của game
+        if let best = semanticUnits(q, last: last, limit: 1).first, best.accept {
+            lastIndex = best.idx
+            return Match(vi: best.vi, index: best.idx, kind: .semantic)
+        }
         return nil
+    }
+
+    // MARK: - 1.28: Khớp theo nghĩa
+
+    struct SemanticUnit {
+        let idx: Int
+        let en: String
+        let vi: String
+        let score: Double
+        let accept: Bool
+    }
+
+    /// Các câu (đã tách câu Anh ↔ Việt) trong data có nghĩa gần câu q nhất.
+    /// Điểm = nghĩa cả câu (NLEmbedding trên iPhone) + từ khoá theo gốc từ (trọng số từ hiếm) + đúng thứ tự kịch bản.
+    /// Gọi khi ĐANG giữ lock.
+    private func semanticUnits(_ q: [String], last: Int, limit: Int) -> [SemanticUnit] {
+        let qStems = Self.contentStems(q)
+        guard !qStems.isEmpty, !entries.isEmpty else { return [] }
+        let n = Double(entries.count)
+        func idf(_ st: String) -> Double {
+            let df = Double(stemInverted[st]?.count ?? 0)
+            return log((n + 1) / (df + 1)) + 0.5
+        }
+        // Ứng viên: chung từ khoá hiếm + vài câu ngay sau câu vừa khớp (kịch bản chạy theo thứ tự)
+        var cand: [Int: Double] = [:]
+        for st in Set(qStems) {
+            guard let list = stemInverted[st], Double(list.count) < max(50, n * 0.2) else { continue }
+            let w = idf(st)
+            for i in list { cand[i, default: 0] += w }
+        }
+        var ids = cand.sorted { $0.value > $1.value }.prefix(40).map { $0.key }
+        if last >= 0 {
+            for k in -1...6 where last + k >= 0 && last + k < entries.count { ids.append(last + k) }
+        }
+        var seen = Set<Int>()
+        ids = ids.filter { seen.insert($0).inserted }
+
+        let qText = q.joined(separator: " ")
+        let qVec = embedding(of: qText)
+        let qWeights = Dictionary(qStems.map { ($0, idf($0)) }, uniquingKeysWith: { a, _ in a })
+        let qTotal = qWeights.values.reduce(0, +)
+        var units: [SemanticUnit] = []
+        for idx in ids {
+            let e = entries[idx]
+            let groups = sentenceGroups(idx)
+            var spans: [(Int, Int, Int, String)] = groups.enumerated().map { ($0.offset, $0.element.tokStart, $0.element.tokEnd, $0.element.vi) }
+            if groups.count > 1 { spans.append((-1, 0, e.tokens.count, e.vi)) }   // cả dòng (phụ đề gộp nhiều câu)
+            for (gi, a, b, vi) in spans where b > a && a >= 0 && b <= e.tokens.count {
+                let toks = Array(e.tokens[a..<b])
+                let uStems = Self.contentStems(toks)
+                guard !uStems.isEmpty else { continue }
+                // Từ khoá: phần trọng số chung / trung bình 2 phía (giống Dice nhưng theo độ hiếm của từ)
+                let uSet = Set(uStems)
+                let common = qWeights.filter { uSet.contains($0.key) }.values.reduce(0, +)
+                let uTotal = uSet.map { idf($0) }.reduce(0, +)
+                let lex = 2 * common / max(0.001, qTotal + uTotal)
+                // Độ dài quá chênh -> không phải cùng câu
+                let ratio = Double(toks.count) / Double(max(1, q.count))
+                guard ratio > 0.35 && ratio < 3.0 else { continue }
+                var score = lex
+                var sem = 0.0
+                if let qv = qVec, let uv = cachedEmbedding(unitID: idx * 64 + gi + 1, text: toks.joined(separator: " ")) {
+                    sem = Self.cosine(qv, uv)
+                    score = 0.55 * sem + 0.45 * lex
+                }
+                if last >= 0 && idx >= last && idx <= last + 3 { score += 0.08 }
+                else if last >= 0 && idx >= last - 1 && idx <= last + 8 { score += 0.04 }
+                // Câu ngắn (≤ 2 từ khoá: "What have you done?" / "Well done!") rất dễ khớp nhầm -> đòi chặt hơn
+                let commonCount = Set(qStems).intersection(uSet).count
+                let short = Set(qStems).count <= 2
+                let accept: Bool
+                if qVec != nil {
+                    accept = short
+                        ? (sem >= 0.85 && commonCount == Set(qStems).count && uSet.count <= Set(qStems).count + 1)
+                        : (score >= 0.74 && lex >= 0.30 && sem >= 0.72 && commonCount >= 2)
+                } else {
+                    accept = !short && lex >= 0.80 && commonCount >= 2
+                }
+                units.append(SemanticUnit(idx: idx, en: e.en, vi: vi, score: score, accept: accept))
+            }
+        }
+        return Array(units.sorted { $0.score > $1.score }.prefix(limit))
+    }
+
+    /// 1.28: các câu Việt hoá CÓ THỂ cùng nghĩa (chưa đủ chắc để dùng thẳng) -> đưa AI iPhone xét
+    func nearMeaning(_ english: String, limit: Int = 3) -> [(en: String, vi: String)] {
+        let q = Self.normalize(english).split(separator: " ").map(String.init)
+        guard !q.isEmpty else { return [] }
+        lock.lock(); defer { lock.unlock() }
+        return semanticUnits(q, last: lastIndex, limit: limit).filter { $0.score >= 0.45 }.map { ($0.en, $0.vi) }
+    }
+
+    /// 1.28: AI chọn nguyên văn 1 câu Việt hoá -> ghi nhận để câu sau ưu tiên đúng đoạn kịch bản
+    func noteUsed(vi: String) {
+        lock.lock(); defer { lock.unlock() }
+        if let i = entries.firstIndex(where: { $0.vi == vi }) { lastIndex = i }
+    }
+
+    private func embedding(of text: String) -> [Double]? {
+        guard let emb = sentenceEmbedding else { return nil }
+        return emb.vector(for: text)
+    }
+
+    private func cachedEmbedding(unitID: Int, text: String) -> [Double]? {
+        if let v = embedCache[unitID] { return v }
+        guard let v = embedding(of: text) else { return nil }
+        if embedCache.count > 20000 { embedCache.removeAll() }
+        embedCache[unitID] = v
+        return v
+    }
+
+    static func cosine(_ a: [Double], _ b: [Double]) -> Double {
+        guard a.count == b.count, !a.isEmpty else { return 0 }
+        var dot = 0.0, na = 0.0, nb = 0.0
+        for i in 0..<a.count { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
+        return dot / max(1e-9, (na.squareRoot() * nb.squareRoot()))
+    }
+
+    /// Từ phổ biến không mang nghĩa riêng (bỏ khi so nghĩa)
+    static let stopwords: Set<String> = [
+        "the", "a", "an", "and", "or", "but", "so", "to", "of", "in", "on", "at", "for", "with", "by", "from",
+        "is", "are", "was", "were", "be", "been", "am", "it", "its", "this", "that", "these", "those", "there",
+        "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his", "our", "their",
+        "do", "does", "did", "have", "has", "had", "will", "would", "can", "could", "should", "just", "not", "no",
+        "what", "if", "as", "all", "up", "out", "about", "into", "then", "than", "too", "very", "oh", "yes", "yeah",
+        "s", "t", "ll", "ve", "re", "m", "d", "don", "now", "here", "one", "get", "got", "go", "going", "come"
+    ]
+
+    /// Gốc từ đơn giản: blessed / blessing / blesses -> bless; stories -> story
+    static func stem(_ w: String) -> String {
+        var s = w
+        if s.count > 4 && s.hasSuffix("ies") { return String(s.dropLast(3)) + "y" }
+        if s.count > 5 && s.hasSuffix("ing") { s = String(s.dropLast(3)) }
+        else if s.count > 4 && s.hasSuffix("ed") { s = String(s.dropLast(2)) }
+        else if s.count > 4 && s.hasSuffix("es") { s = String(s.dropLast(2)) }
+        else if s.count > 3 && s.hasSuffix("s") && !s.hasSuffix("ss") { s = String(s.dropLast(1)) }
+        if s.count > 3, let l = s.last, s.dropLast().last == l, !"lsz".contains(l) { s = String(s.dropLast()) }   // stopped -> stop
+        return s
+    }
+
+    static func contentStems(_ tokens: [String]) -> [String] {
+        tokens.filter { !stopwords.contains($0) && $0.count >= 2 && !$0.allSatisfy({ $0.isNumber }) }.map { stem($0) }
     }
 
     /// Vị trí (chỉ số từ) mà các từ của q xuất hiện LIỀN MẠCH trong c (cho phép 1 từ OCR sai nếu đoạn ≥ 5 từ)
@@ -1076,7 +1294,7 @@ final class OnlineFallbackTranslator {
     private let cacheURL: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         // 1.24: đổi tên file -> bỏ toàn bộ bản dịch cũ đã lưu (có câu bị mất tên "Sam")
-        return docs.appendingPathComponent("ai_translation_cache_v124.json")
+        return docs.appendingPathComponent("ai_translation_cache_v128.json")
     }()
     private var dirty = false
 
@@ -1105,6 +1323,9 @@ final class OnlineFallbackTranslator {
         pending.insert(key)
         lock.unlock()
 
+        // 1.28: ĐÃ BỎ Google Dịch - lớp này chỉ còn dùng để lưu bản dịch AI trên máy
+        finish(key: key, value: nil)
+        return
         // Thay tên riêng bằng mã giữ chỗ để máy dịch không dịch tên
         var working = text
         var slots: [(String, String)] = []
@@ -1312,6 +1533,10 @@ final class TrackedPiece {
     var moveEvents = 0
     /// 1.17: chữ in trên giấy / thư / biển báo (mực tối trên nền sáng)
     var isPaper = false
+    /// 1.27: OCR đọc ra câu khác hẳn -> đang dịch lại câu này, GIỮ bản dịch cũ tới khi bản mới về
+    var refreshKey: String?
+    /// 1.27: đã có câu thoại mới thế chỗ -> tắt ngay
+    var superseded = false
 
     /// Chữ dính vào vật thể 3D: di chuyển ở phần lớn các lần quét -> không dịch
     var isWorldText: Bool {
@@ -1357,17 +1582,17 @@ final class TrackedPiece {
         // Đây là lỗi hiện "CỐT TRUYỆN CỦA CHÚNG TA" ở cảnh không có chữ tiếng Anh nào.
         // Riêng lời thoại ngắn: AI về trễ dưới 1,5 giây vẫn hiện (nhường chỗ ngay khi có câu thoại mới).
         guard let shown = shownAt else { return gone }
-        if shown > gone {
-            guard piece.category == .dialogue, shown.timeIntervalSince(gone) < 1.5 else { return gone }
-        }
-        if fromDatabase { return gone.addingTimeInterval(0.35) }
+        // 1.27: bản dịch về sau khi chữ gốc đã tắt -> không hiện (kể cả lời thoại: hiện / tắt theo chữ gốc)
+        if shown > gone { return gone }
+        // 1.27: lời thoại tắt cùng chữ gốc (chỉ chờ 0,35 giây che khoảng trống giữa 2 lần quét)
+        if fromDatabase || piece.category == .dialogue { return gone.addingTimeInterval(0.35) }
         let chars = Double(translation?.count ?? 0)
         let readTime = min(4.5, max(1.6, 0.8 + chars * 0.05))
         return max(gone.addingTimeInterval(1.2), shown.addingTimeInterval(readTime))
     }
 
     func isVisible(at now: Date) -> Bool {
-        guard translation != nil, isConfirmed, !isWorldText, !sceneCut else { return false }
+        guard translation != nil, isConfirmed, !isWorldText, !sceneCut, !superseded else { return false }
         if let until = holdUntil() { return now < until }
         return true
     }
@@ -1573,6 +1798,16 @@ final class SmartSubtitleEngine {
     /// 1.19: Tên riêng trong data Việt hoá đang dùng (giữ nguyên khi dịch)
     var knownNames: [String] { memory.names.sorted() }
 
+    /// 1.28: game chưa có data -> XOÁ data của game trước (không dùng chéo data giữa các game)
+    func clearDatabase() {
+        memory.clear()
+        queue.async {
+            self.filter.extraNames = []
+            self.tracked.removeAll()
+            self.stabilizer.reset()
+        }
+    }
+
     func loadDatabase(url: URL) -> TranslationDBReport {
         let rep = memory.load(url: url)
         queue.async {
@@ -1593,7 +1828,8 @@ final class SmartSubtitleEngine {
             self.lastFrame = frame
             // Hệ toạ độ tham chiếu cao 720, rộng theo tỉ lệ khung hình (YouTube có video dọc / vuông)
             self.frameRefW = 720 * CGFloat(frame.width) / CGFloat(max(1, frame.height))
-            let names = Array(GameVocabulary.builtInNames.union(self.memory.names)).map { $0.capitalized }
+            // 1.28: Vision chỉ nhận tên riêng của game đang chọn (trước đây luôn kèm tên Until Dawn)
+            let names = Array(self.memory.names).map { $0.capitalized }
             let lines = self.ocr.recognize(cropped: cropped, roi: roi, customWords: names)
             let memory = self.memory
             let pieces = PieceBuilder.buildPieces(lines: lines, filter: self.filter, refW: self.frameRefW,
@@ -1652,7 +1888,6 @@ final class SmartSubtitleEngine {
         if line.confidence < 0.45 { return "OCR mờ, không chắc chữ" }
         let hPx = line.rect.height * PieceBuilder.refH
         if hPx < 7.5 { return "chữ quá nhỏ (số / HUD)" }
-        if hPx > 50 { return "chữ quá to (tiêu đề / tên)" }
         if line.skewDegrees > 3.0 || line.shearRatio > 0.22 { return "chữ nghiêng trên vật thể 3D" }
         return "ký tự rác / nút bấm / tên riêng"
     }
@@ -1719,9 +1954,12 @@ final class SmartSubtitleEngine {
             for t in tracked where !matchedIDs.contains(t.id) {
                 let dist = hypot(t.piece.rect.midX - piece.rect.midX, t.piece.rect.midY - piece.rect.midY)
                 guard dist < max(0.06, piece.rect.height * 2.5) else { continue }
-                let sim = t.key == key ? 1.0 : TranslationMemory.similarity(keyTokens, t.key.split(separator: " ").map(String.init))
+                let tTokens = t.key.split(separator: " ").map(String.init)
+                let sim = t.key == key ? 1.0 : TranslationMemory.similarity(keyTokens, tTokens)
                 let score = sim - Double(dist)
-                if sim >= 0.6 && score > bestScore { bestScore = score; bestMatch = t }
+                // 1.28: câu ngắn ("Speak!" / "Speak her name!") phải giống ≥ 85% mới coi là CÙNG dòng phụ đề
+                let minSim = min(keyTokens.count, tTokens.count) <= 3 ? 0.85 : 0.6
+                if sim >= minSim && score > bestScore { bestScore = score; bestMatch = t }
             }
             // Tra data chỉ khi chữ mới / chữ đổi (đỡ tốn CPU mỗi lần quét)
             let dbMatch: TranslationMemory.Match? = (bestMatch?.key == key) ? nil : memory.lookupMatch(piece.sourceText)
@@ -1739,6 +1977,7 @@ final class SmartSubtitleEngine {
                 t.misses = 0
                 t.goneAt = nil
                 t.sceneCut = false
+                t.superseded = false
                 let r = t.piece.rect, n = piece.rect
                 let moved = abs(r.minX - n.minX) > 0.012 || abs(r.minY - n.minY) > 0.012
                     || abs(r.width - n.width) > 0.03 || abs(r.height - n.height) > 0.02
@@ -1769,11 +2008,18 @@ final class SmartSubtitleEngine {
                         if t.translation != dv { t.translation = dv; t.shownAt = now }
                         t.fromDatabase = true
                         t.dbIndex = m.index
-                    } else if TranslationMemory.similarity(keyTokens, oldTokens) < 0.95 && !t.fromDatabase {
-                        t.translation = nil
-                        t.shownAt = nil
+                    } else if !t.fromDatabase && TranslationMemory.similarity(keyTokens, oldTokens) < 0.8 {
+                        // 1.27: chữ đổi thật (không phải OCR rung) -> dịch lại nhưng VẪN HIỆN bản cũ tới khi bản mới về
+                        // (trước đây xoá bản dịch ngay -> khung tắt 1-3 giây trong khi chữ tiếng Anh vẫn còn)
+                        if t.translation == nil {
+                            t.shownAt = nil
+                        } else {
+                            t.refreshKey = key
+                        }
+                        t.aiPending = false
                         translate(t)
                     }
+                    // OCR đọc lệch vài chữ (giống >= 80%) -> giữ nguyên bản dịch đang hiện
                 } else if t.translation == nil && !t.aiPending {
                     translate(t)
                 }
@@ -1799,6 +2045,15 @@ final class SmartSubtitleEngine {
                 }
                 tracked.append(t)
                 matchedIDs.insert(t.id)
+            }
+        }
+
+        // 1.27: đã có câu thoại mới trên màn hình -> câu thoại cũ (đã biến mất) tắt NGAY, không giữ thêm
+        let dialogueNow = tracked.contains { matchedIDs.contains($0.id) && $0.piece.category == .dialogue }
+        if dialogueNow {
+            for t in tracked where !matchedIDs.contains(t.id) && t.piece.category == .dialogue {
+                t.superseded = true
+                if t.goneAt == nil { t.goneAt = now }
             }
         }
 
@@ -1854,10 +2109,10 @@ final class SmartSubtitleEngine {
         // Chữ IN HOA (lựa chọn câu trả lời, tiêu đề): gửi AI dạng câu thường, rồi in hoa lại bản dịch
         let allCaps = Self.isAllCaps(src)
         let styled: (String) -> String = { allCaps ? $0.uppercased(with: Locale(identifier: "vi_VN")) : $0 }
-        let aiKey = "ai|" + t.key
-        let preferApple = engineMode == .appleThenGoogle || engineMode == .appleOnly
+        // 1.28: bản dịch AI lưu RIÊNG cho từng game (không dùng chéo giữa các game)
+        let aiKey = "ai|" + gameTitle.lowercased() + "|" + t.key
         let aiSource = allCaps ? sentenceCase(src) : src
-        // Tên riêng: tên có sẵn + từ viết hoa giữa câu không có trong từ điển tiếng Anh
+        // Tên riêng: tên trong data của game + từ viết hoa giữa câu không có trong từ điển tiếng Anh
         var protected: [String] = []
         let words = aiSource.split(separator: " ").map { GameTextFilter.stripPossessive(String($0).trimmingCharacters(in: .punctuationCharacters)) }
         for (i, w) in words.enumerated() where !w.isEmpty {
@@ -1865,40 +2120,39 @@ final class SmartSubtitleEngine {
                 if !protected.contains(w) { protected.append(w) }
             }
         }
-        // 1.24: bản dịch đã lưu trên máy cũng phải còn đủ tên ("Sam"), thiếu tên thì bỏ, dịch lại
-        if preferApple, let vi = online.cached(aiKey), Self.keepsNames(protected, in: vi) {
+        // Bản dịch AI đã lưu trên máy (cùng game) - phải còn đủ tên riêng
+        if let vi = online.cached(aiKey), Self.keepsNames(protected, in: vi) {
             t.translation = styled(vi)
             t.shownAt = Date()
-            return
-        }
-        if engineMode != .appleOnly, let vi = online.cached(t.key), Self.keepsNames(protected, in: vi) {
-            t.translation = styled(vi)
-            t.shownAt = Date()
+            t.refreshKey = nil
             return
         }
         online.forget(aiKey)
-        online.forget(t.key)
-        guard useOnlineAI, engineMode != .offline, !t.aiPending else { return }
+        // 1.28: KHÔNG dùng Google Dịch. Chỉ data Việt hoá + Apple Intelligence trên iPhone.
+        guard useOnlineAI, engineMode != .offline, !t.aiPending, OnDeviceAITranslator.shared.isAvailable else { return }
 
         let key = t.key
         t.aiPending = true
         t.requestKey = key
-        weak var target = t
-        let done = AIDeliveryFlag()
+        let speaker = t.piece.speaker
+        let filterRef = filter
+        let memoryRef = memory
+        // Câu Việt hoá có thể cùng nghĩa (data dịch ngược nên chữ Anh khác) -> AI xét, cùng nghĩa thì dùng nguyên văn
+        let near = memory.nearMeaning(aiSource)
 
-        // 1.14: giao bản dịch cho ĐÚNG khung đã gửi (kể cả khi OCR đọc chữ hơi khác ở lần quét sau)
-        let deliver: (String) -> Void = { [weak self] raw in
+        // 1.27: giao bản dịch CHỈ cho khung đang hiện đúng câu đã gửi dịch
+        let deliver: (String, Bool) -> Void = { [weak self] raw, isDataSentence in
             guard let self = self else { return }
-            let vi = styled(raw)
+            let vi = styled(Self.stripSpeakerEcho(raw, speaker: speaker))
             self.queue.async {
-                guard !done.value else { return }
-                done.value = true
                 var changed = false
-                for item in self.tracked where item.translation == nil
-                    && (item === target || item.key == key || item.requestKey == key) {
+                for item in self.tracked where item.key == key || item.requestKey == key {
+                    guard item.translation == nil || item.refreshKey == key else { continue }
+                    if item.translation == nil { item.shownAt = Date() }
                     item.translation = vi
+                    item.fromDatabase = isDataSentence
+                    item.refreshKey = nil
                     item.aiPending = false
-                    item.shownAt = Date()
                     changed = true
                 }
                 if changed {
@@ -1907,50 +2161,80 @@ final class SmartSubtitleEngine {
                 }
             }
         }
-        let google: () -> Void = { [weak self] in
-            self?.online.request(text: aiSource, key: key, protectedWords: protected, completion: deliver)
+        let fail: () -> Void = { [weak self] in
+            self?.queue.async { for item in self?.tracked ?? [] where item.requestKey == key { item.aiPending = false } }
         }
 
-        if preferApple && OnDeviceAITranslator.shared.isAvailable {
-            let context = AITranslationContext(
-                gameTitle: gameTitle,
-                category: t.piece.category,
-                speaker: t.piece.speaker,
-                protectedWords: protected + Array(memory.names.prefix(40)).map { $0.capitalized },
-                previousLines: recentDialogue
-            )
-            if t.piece.category == .dialogue {
-                recentDialogue.append(src)
-                if recentDialogue.count > 3 { recentDialogue.removeFirst() }
-            }
-            let mode = engineMode
-            let namesInSentence = protected
-            OnDeviceAITranslator.shared.translate(aiSource, key: aiKey, context: context) { [weak self] vi in
-                // 1.20: câu dịch AI phải còn ĐỦ tên riêng của câu gốc ("Sam", "Josh"...).
-                // AI làm rơi tên -> dùng Google (tên được khoá bằng mã giữ chỗ nên không mất).
-                if let vi = vi, mode == .appleThenGoogle, !Self.keepsNames(namesInSentence, in: vi) {
-                    google()
-                    return
-                }
-                if let vi = vi {
-                    let fixed = Self.reinsertNames(namesInSentence, source: aiSource, vi: vi)
-                    self?.online.store(key: aiKey, value: fixed)
-                    deliver(fixed)
-                } else if mode == .appleThenGoogle {
-                    google()
-                } else {
-                    self?.queue.async { for item in self?.tracked ?? [] where item.requestKey == key { item.aiPending = false } }
-                }
-            }
-            // Apple Intelligence chậm quá 1,2 giây -> gửi Google song song, bản nào về trước thì hiện
-            if mode == .appleThenGoogle {
-                queue.asyncAfter(deadline: .now() + 1.2) {
-                    if !done.value { google() }
-                }
-            }
-        } else if engineMode != .appleOnly {
-            google()
+        // Ví dụ văn phong: câu Việt hoá giống nhất (không trùng với các câu "có thể cùng nghĩa")
+        let nearVI = Set(near.map { $0.vi })
+        let examples = memory.examples(for: aiSource).filter { !nearVI.contains($0.vi) }
+        let context = AITranslationContext(
+            gameTitle: gameTitle,
+            category: t.piece.category,
+            speaker: t.piece.speaker,
+            protectedWords: protected,
+            previousLines: recentDialogue,
+            examples: examples,
+            sameMeaningCandidates: near
+        )
+        if t.piece.category == .dialogue {
+            recentDialogue.append(src)
+            if recentDialogue.count > 3 { recentDialogue.removeFirst() }
         }
+        let namesInSentence = protected
+        OnDeviceAITranslator.shared.translate(aiSource, key: aiKey, context: context) { [weak self] vi in
+            guard var vi = vi else { fail(); return }
+            // AI chọn NGUYÊN VĂN 1 câu Việt hoá trong data -> coi như dịch từ data
+            let picked = near.first { Self.sameText($0.vi, vi) }
+            if let p = picked {
+                memoryRef.noteUsed(vi: p.vi)
+                deliver(p.vi, true)
+                return
+            }
+            // AI tự thêm tên người không có trong câu gốc -> sai, không hiện
+            if Self.addsForeignNames(vi, source: aiSource, speaker: speaker, filter: filterRef) { fail(); return }
+            vi = Self.reinsertNames(namesInSentence, source: aiSource, vi: vi)
+            self?.online.store(key: aiKey, value: vi)
+            deliver(vi, false)
+        }
+    }
+
+    /// 1.28: 2 câu Việt giống nhau (bỏ dấu câu, khoảng trắng, hoa thường)
+    static func sameText(_ a: String, _ b: String) -> Bool {
+        func core(_ s: String) -> String {
+            s.lowercased().filter { $0.isLetter || $0.isNumber }
+        }
+        let x = core(a), y = core(b)
+        return !x.isEmpty && x == y
+    }
+
+    /// 1.27: AI lặp lại tên người nói ở đầu câu dịch ("Rost Tôi chỉ làm...", "Rost: Tôi...") -> bỏ đi
+    static func stripSpeakerEcho(_ vi: String, speaker: String?) -> String {
+        guard let sp = speaker, !sp.isEmpty else { return vi }
+        var out = vi.trimmingCharacters(in: .whitespaces)
+        let lower = out.lowercased(), spl = sp.lowercased()
+        if lower.hasPrefix(spl) {
+            let rest = out.dropFirst(sp.count)
+            if let c = rest.first, c == ":" || c == " " || c == "," {
+                let tail = rest.drop(while: { $0 == ":" || $0 == " " || $0 == "," })
+                // "Rost, con..." là gọi tên -> chỉ bỏ khi sau tên là ":" hoặc là chữ viết hoa (bắt đầu câu mới)
+                if c == ":" || (tail.first?.isUppercase ?? false) { out = String(tail) }
+            }
+        }
+        return out
+    }
+
+    /// 1.27: bản dịch chứa tên nhân vật KHÔNG có trong câu gốc (AI bịa ra, ví dụ "Sam") -> sai
+    static func addsForeignNames(_ vi: String, source: String, speaker: String?, filter: GameTextFilter) -> Bool {
+        let srcFold = source.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let spFold = speaker?.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) ?? ""
+        for raw in vi.split(whereSeparator: { $0 == " " || $0 == "," || $0 == "." || $0 == "!" || $0 == "?" || $0 == ":" }) {
+            let w = String(raw).trimmingCharacters(in: .punctuationCharacters)
+            guard let f = w.first, f.isUppercase, w.count >= 2, filter.isName(w) else { continue }
+            let wf = w.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            if !srcFold.contains(wf) && wf != spFold { return true }
+        }
+        return false
     }
 
     /// 1.24: câu Việt hoá trong data cũng phải giữ tên nhân vật có trong câu gốc

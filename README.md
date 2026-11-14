@@ -1,4 +1,44 @@
 # PS5Translator
+## Bản 1.28 – Chỉ Data Việt hoá + AI iPhone, khớp data theo nghĩa, mỗi game 1 data riêng
+- **Bỏ hẳn Google Dịch.** Thứ tự dịch: Data Việt hoá → Apple Intelligence trên iPhone. Không gửi chữ lên Internet, không còn cảnh câu dịch đổi qua đổi lại. iPhone không có Apple Intelligence thì chỉ dịch được câu có trong data.
+- **Vẫn dịch theo từng màn phụ đề** (không đợi gom cả câu). Câu dịch hiện theo câu gốc, lấy từ data; không có trong data thì AI dịch.
+- **Khớp data theo NGHĨA** (data dịch ngược từ tiếng Việt / tiếng khác nên chữ Anh khác bản gốc của game). Sau các bước khớp chữ cũ, app thêm bước khớp theo nghĩa:
+  - **Từ khoá theo gốc từ:** blessed / blessing → bless; bỏ từ phổ biến; từ càng hiếm càng nặng ký.
+  - **Nghĩa cả câu:** bộ so nghĩa câu tiếng Anh có sẵn trên iPhone (Apple NaturalLanguage, chạy trên máy).
+  - **Thứ tự kịch bản:** cộng điểm cho các câu ngay sau câu vừa khớp.
+  - **Câu ngắn** (≤ 2 từ khoá) phải giống gần như tuyệt đối để tránh nhầm "What have you done?" với "Well done!".
+  - **Chưa đủ chắc:** đưa tối đa 3 câu Việt hoá có thể cùng nghĩa cho AI iPhone xét. Cùng nghĩa thì AI trả về **nguyên văn** câu Việt hoá (hiện như câu data); không thì AI tự dịch theo văn phong data.
+- **Mỗi game 1 data riêng:**
+  - Bỏ danh sách tên nhân vật Until Dawn gõ sẵn trong app. Tên riêng (cho OCR, nhận người nói, giữ tên khi dịch) chỉ lấy từ bảng glossary trong data của game đang chọn.
+  - Bản dịch AI lưu riêng theo từng game.
+  - Đổi sang game chưa có data thì xoá data của game trước (trước đây vẫn tra data game cũ).
+  - Quy tắc dịch dùng chung cho mọi game, không theo riêng game nào.
+- **Bỏ giới hạn chữ cao trên 50px.** Lưu ý: chữ to như tiêu đề chương ("MEMENTO MORI") sẽ lại được dịch, trừ dòng chỉ có tên nhân vật.
+- **Theo dõi dòng phụ đề:** câu ngắn (≤ 3 từ) phải giống từ 85% trở lên mới coi là cùng một dòng qua các lần quét (trước đây 60%), tránh "Speak!" bị coi là "Speak her name!".
+
+## Bản 1.27 – Sửa dịch theo video test Horizon Zero Dawn
+- **Chữ "Sam" xuất hiện sai** ("All-Mother, this child..." → "Sam, cái bé này..."): lỗi từ lần sửa cho Until Dawn.
+  - Lời dặn Apple Intelligence có câu ví dụ nhắc "Sam", AI hiểu thành phải chèn "Sam". Đã bỏ ví dụ đó.
+  - Danh sách tên nhân vật Until Dawn trước đây áp cho mọi game; giờ chỉ dùng khi chơi Until Dawn.
+  - AI chỉ được báo các tên có thật trong câu (trước đây báo cả 40 tên của game).
+  - Bản dịch AI chứa tên người không có trong câu gốc thì bị bỏ, dùng Google.
+- **Hiện bản dịch của câu khác** (giây 37: "Bạn đã làm gì?" trên câu "I've blessed..."): bản dịch về trễ trước đây được giao cho khung đã chuyển sang câu mới. Giờ chỉ giao cho khung đang hiện đúng câu đã gửi dịch.
+- **Chữ dịch tắt trước chữ gốc** (giây 2–5): OCR đọc câu hơi khác đi thì app xoá bản dịch rồi dịch lại.
+  - OCR đọc lệch vài chữ (giống từ 80%): giữ nguyên bản dịch.
+  - Chữ đổi thật: dịch lại nhưng vẫn hiện bản cũ tới khi bản mới về.
+- **Khung lời thoại hiện / tắt theo chữ gốc:**
+  - Câu mới xuất hiện thì khung câu cũ tắt ngay.
+  - Lời thoại chỉ giữ thêm 0,35 giây sau khi chữ gốc tắt (trước đây bản AI giữ 1,6–4,5 giây nên đè lên câu sau).
+  - Bản dịch về sau khi chữ gốc đã tắt thì không hiện.
+- **Nhanh hơn:** lời thoại gửi Google sau 0,4 giây để có chữ ngay; Apple Intelligence về sau sẽ thay bằng bản tốt hơn.
+- **Dịch sát văn phong Việt hoá:**
+  - Mỗi câu gửi AI kèm tối đa 4 câu Việt hoá chính thức giống nhất trong data của game, để AI theo xưng hô, văn phong và thuật ngữ. Ví dụ "All-Mother" → "Mẹ Chúng Sinh", "outcast" → "kẻ ruồng bỏ", Rost xưng "ta" – gọi "con".
+  - Bỏ quy tắc xưng hô riêng của Until Dawn (tớ/cậu); không dùng "bạn" giữa các nhân vật.
+  - Đổi file lưu bản dịch (`ai_translation_cache_v127.json`) để bỏ các bản dịch cũ sai.
+- **Người nói:**
+  - OCR đọc sai 1 chữ của tên ("leersa:" → "Teersa:") vẫn nhận đúng người nói.
+  - AI lặp tên người nói ("Rost: Rost Tôi...") thì bỏ phần lặp.
+
 ## Bản 1.26 – Sửa lỗi "Thiếu file tv_app_icon.png", sao lưu / khôi phục data game
 - **Cài app TV từ iPhone:** bản 1.25 đổi icon thành `.bin` nhưng Xcode không chép file `.bin` vào app → lỗi
   "Thiếu file tv_app_icon.png". Bản 1.26 nhúng icon PNG thẳng vào mã Swift (`11B_TVAppIcon.swift`),

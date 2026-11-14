@@ -320,7 +320,7 @@ struct MainTranslatorView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
-                    Text("Câu chưa có trong data Việt hoá: Apple AI dịch trước, không được thì Google.")
+                    Text("Câu chưa có trong data Việt hoá (kể cả khớp theo nghĩa): Apple Intelligence trên iPhone dịch theo văn phong data.")
                         .font(.system(size: 12))
                         .foregroundColor(MQTheme.tertiary)
                         .lineLimit(2)
